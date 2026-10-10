@@ -64,3 +64,5 @@ artifacts/
 Thumbs.db
 HANDOVER**.md
 /test_metadata.csv
+# MLflow state
+mlflow-state/
