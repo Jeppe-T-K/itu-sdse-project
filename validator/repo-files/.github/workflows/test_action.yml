@@ -1,0 +1,91 @@
+name: 'Run Model Inference Test'
+
+on:
+  workflow_dispatch:
+
+jobs:
+  # ---- legacy mode, unchanged: upload the encrypted v1 sklearn model
+  # and run the built-in test against it. ----
+  upload-model:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4.1.7
+
+      - name: Upload Encrypted Model Artifact
+        uses: actions/upload-artifact@v4.4.0
+        with:
+          name: model
+          path: test/model/model.pkl.enc
+
+  run-inference:
+    needs: upload-model
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4.1.7
+
+      - name: Run Model Inference Test Action
+        uses: lasselundstenjensen/itu-sdse-project-model-validator@main
+        with:
+          model_password: ${{ secrets.MODEL_PASSWORD }}
+
+  # ---- v2 mode, plumbing: the action must run a command in the
+  # caller's workspace without clobbering it or requiring an in-run
+  # model artifact. ----
+  v2-command-mode:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4.1.7
+
+      - name: Stage a model directory
+        run: mkdir -p model && echo placeholder > model/placeholder
+
+      - name: Run the action in v2 mode
+        uses: ./
+        with:
+          model_path: model
+          validate_command: python3 -c 'print("v2 validation command ran")'
+
+  # ---- v2 mode, integration: a real v2-format model (MLflow pyfunc
+  # export), the real fixture images and the real validation method
+  # from the project repository. The sample model is untrained, so the
+  # fixtures directory uses kit/fixtures/sample-model-expected.csv
+  # (the sample model's observed outputs) instead of the ground-truth
+  # expected.csv - this tests plumbing, not model quality. ----
+  v2-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4.1.7
+
+      - name: Check out the project repository (validation method + src package)
+        uses: actions/checkout@v4.1.7
+        with:
+          repository: lasselundstenjensen/itu-sdse-project
+          ref: v2
+          path: itu-sdse-project
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install project dependencies
+        run: |
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install -e itu-sdse-project
+
+      - name: Stage the sample model and fixtures
+        run: |
+          mkdir -p models/model integration-fixtures
+          cp -r kit/sample-model/. models/model/
+          cp kit/fixtures/*.jpg integration-fixtures/
+          cp kit/fixtures/sample-model-expected.csv integration-fixtures/expected.csv
+
+      - name: Run the action in v2 mode
+        uses: ./
+        with:
+          model_path: models/model
+          validate_command: python itu-sdse-project/scripts/validate_model.py --model-dir models/model --fixtures-dir integration-fixtures

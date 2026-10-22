@@ -1,0 +1,113 @@
+name: 'Run Model Inference Test'
+description: 'Validates a model artifact. Legacy mode: built-in sklearn test. v2 mode: runs the calling repository''s own validation command.'
+inputs:
+  model_password:
+    description: '[OPTIONAL] Password to decrypt the model file. Legacy mode only.'
+    required: false
+    default: ''
+  model_path:
+    description: 'Path where the calling workflow staged the model artifact. v2 mode only.'
+    required: false
+    default: 'model'
+  validate_command:
+    description: 'Command that runs the calling repository''s validation method. Non-empty selects v2 mode; empty selects legacy mode.'
+    required: false
+    default: ''
+outputs: {}
+runs:
+  using: 'composite'
+  steps:
+    # ---- v2 mode: the calling repository owns the model, the
+    # dependencies and the validation method; the action only checks
+    # that the model was staged and runs the command. In particular:
+    # no checkout of this repo (it would clobber the caller's
+    # workspace) and no download-artifact (the v2 model artifact
+    # belongs to a *previous* run, which download-artifact@v4 cannot
+    # see; the caller fetches it with gh before invoking the action).
+    - name: Check the staged model exists
+      if: ${{ inputs.validate_command != '' }}
+      run: |
+        if [ ! -d "${{ inputs.model_path }}" ]; then
+          echo "::error::model artifact not staged at '${{ inputs.model_path }}' - the calling workflow must download it before this step"
+          exit 1
+        fi
+      shell: bash
+
+    - name: Run the repository's validation command
+      if: ${{ inputs.validate_command != '' }}
+      run: ${{ inputs.validate_command }}
+      shell: bash
+
+    # ---- legacy mode: unchanged v1 sklearn flow ----
+    - name: Checkout code
+      if: ${{ inputs.validate_command == '' }}
+      uses: actions/checkout@v4.1.7
+      with:
+        repository: lasselundstenjensen/itu-sdse-project-model-validator
+        clean: true
+
+    - name: Download model artifact
+      if: ${{ inputs.validate_command == '' }}
+      uses: actions/download-artifact@v4.1.8
+      with:
+        name: model
+        path: model
+
+    - name: Decrypt model artifact if a password is provided
+      if: ${{ inputs.validate_command == '' && inputs.model_password != '' }}
+      run: |
+        openssl aes-256-cbc -d -in model/model.pkl.enc -out model/model.pkl -pass pass:${{ inputs.model_password }}
+      shell: bash
+
+    - name: Set up Python
+      if: ${{ inputs.validate_command == '' }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install dependencies
+      if: ${{ inputs.validate_command == '' }}
+      run: |
+        pip install scikit-learn pandas joblib
+      shell: bash
+
+    - name: Run inference test
+      if: ${{ inputs.validate_command == '' }}
+      run: |
+        import sklearn
+        import pandas as pd
+        import joblib
+        import numpy as np
+
+        # Load the downloaded model
+        with open("model/model.pkl", "rb") as f:
+            model = joblib.load(f)
+
+        # Load the test data
+        X = pd.read_csv("test/dataset/X_test.csv")
+        y = pd.read_csv("test/dataset/y_test.csv")
+
+        # Make predictions
+        y_pred = model.predict(X.head(5))
+        y_true = y.head(5).values.flatten()
+
+        # Print outputs
+        print("Predicted:", y_pred)
+        print("Actual:", y_true)
+
+        # Define expected outputs
+        expected_pred = np.array([0., 1., 0., 1., 0.])
+        expected_y = np.array([0., 1., 0., 1., 0.])
+
+        # Compare predicted outputs
+        if not np.array_equal(y_pred, expected_pred):
+            print("Predicted values do not match expected values!")
+            exit(1)
+
+        # Compare actual outputs
+        if not np.array_equal(y_true, expected_y):
+            print("Actual values do not match expected values!")
+            exit(1)
+
+        print("Inference output matches the expected output.")
+      shell: python
